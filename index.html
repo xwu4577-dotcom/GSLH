@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>工作助手 - 实战决策量化模块</title>
+    <style>
+        :root { --primary: #e74c3c; --success: #27ae60; --warning: #f39c12; --info: #3498db; --bg: #f5f6fa; --text: #2c3e50; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg); display: flex; justify-content: center; padding-top: 30px; padding-bottom: 50px; }
+        .card { background: white; padding: 2rem; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); width: 100%; max-width: 550px; }
+        h2 { text-align: center; color: var(--text); margin-bottom: 1.5rem; }
+        .input-group { display: flex; gap: 10px; margin-bottom: 20px; }
+        input { flex: 1; padding: 12px; border: 2px solid #ddd; border-radius: 8px; outline: none; font-size: 16px; transition: border 0.3s; }
+        input:focus { border-color: var(--info); }
+        button { background: var(--info); color: white; border: none; padding: 12px 20px; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 16px; transition: background 0.3s; }
+        button:hover { background: #2980b9; }
+        button:disabled { background: #95a5a6; cursor: not-allowed; }
+        
+        #display-area { border-top: 2px solid #eee; padding-top: 20px; display: none; margin-top: 10px; }
+        .price-big { font-size: 2.5rem; font-weight: bold; margin: 5px 0; }
+        .info-row { display: flex; justify-content: space-between; margin-bottom: 8px; color: #7f8c8d; font-size: 14px; }
+        
+        /* 操作指令大牌 */
+        .decision-banner { margin: 15px 0; padding: 15px; border-radius: 8px; text-align: center; font-size: 1.2rem; font-weight: bold; color: white; display: none; }
+        .bg-buy { background: var(--primary); }
+        .bg-sell { background: var(--success); }
+        .bg-warn { background: var(--warning); }
+        .bg-wait { background: #7f8c8d; }
+
+        /* 策略面板与参数面板 */
+        .strategy-panel { margin-top: 20px; display: flex; flex-direction: column; gap: 10px; }
+        .logic-item { padding: 12px; border-radius: 8px; background: #f8f9fa; border-left: 4px solid #bdc3c7; font-size: 14px; line-height: 1.6; }
+        .logic-item strong { color: var(--text); display: block; margin-bottom: 4px; }
+        
+        /* 实时参数监控区 */
+        .debug-box { margin-top: 20px; padding: 15px; background: #2c3e50; color: #ecf0f1; border-radius: 8px; font-family: monospace; font-size: 13px; line-height: 1.5; }
+        .debug-title { font-weight: bold; color: #f1c40f; margin-bottom: 10px; border-bottom: 1px dashed #7f8c8d; padding-bottom: 5px; }
+        .param-highlight { color: #00d2d3; font-weight: bold; }
+        
+        .up { color: var(--primary); }
+        .down { color: var(--success); }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>🎯 实战决策量化模块</h2>
+    <div class="input-group">
+        <input type="text" id="stockCode" placeholder="输入代码 (如: 002773)">
+        <button onclick="fetchStockData()" id="analyzeBtn">执行分析</button>
+    </div>
+
+    <div id="display-area">
+        <div class="info-row"><span id="stockName" style="font-weight:bold; color:#2c3e50; font-size:18px;">--</span> <span id="fullCode">--</span></div>
+        <div id="currentPrice" class="price-big">0.00</div>
+        <div class="info-row"><span>今日涨跌幅:</span> <span id="changePercent" style="font-weight:bold;">0%</span></div>
+        
+        <div id="final-decision" class="decision-banner">获取决策中...</div>
+
+        <div class="debug-box" id="debug-panel">
+            <div class="debug-title">⚙️ 引擎运算参数实时监控</div>
+            <div id="debug-content">等待数据载入...</div>
+        </div>
+
+        <div class="strategy-panel">
+            <div id="logic-strength" class="logic-item"></div>
+            <div id="logic-volume" class="logic-item"></div>
+            <div id="logic-pattern" class="logic-item"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+function fetchStockData() {
+    let rawCode = document.getElementById('stockCode').value.trim();
+    const displayArea = document.getElementById('display-area');
+    const analyzeBtn = document.getElementById('analyzeBtn');
+    const finalDecision = document.getElementById('final-decision');
+    
+    if(!rawCode) { alert("请输入股票代码！"); return; }
+
+    analyzeBtn.disabled = true;
+    analyzeBtn.innerText = "分析中...";
+    finalDecision.style.display = 'none';
+
+    if (/^\d{6}$/.test(rawCode)) {
+        if (rawCode.startsWith('6')) rawCode = 'sh' + rawCode; 
+        else if (rawCode.startsWith('0') || rawCode.startsWith('3')) rawCode = 'sz' + rawCode; 
+    }
+    const code = rawCode.toLowerCase(); 
+
+    window.klineData = null;
+
+    // 获取至少 30 天历史数据以计算 20日线
+    const scriptKline = document.createElement('script');
+    scriptKline.src = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?_var=klineData&param=${code},day,,,30,qfq`;
+
+    scriptKline.onload = function() {
+        const stockInfo = window.klineData && window.klineData.data ? window.klineData.data[code] : null;
+        if (!stockInfo) {
+            alert("历史数据获取失败，请确认代码。");
+            resetBtn();
+            return;
+        }
+
+        const days = stockInfo.qfqday || stockInfo.day; 
+        if (!days || days.length === 0) {
+            alert("该股票暂无足够历史数据！");
+            resetBtn();
+            return;
+        }
+
+        let sumClose5 = 0, sumClose10 = 0, sumClose20 = 0, sumVol5 = 0;
+        let count5 = Math.min(days.length, 5);
+        let count10 = Math.min(days.length, 10);
+        let count20 = Math.min(days.length, 20);
+        
+        for (let i = days.length - count5; i < days.length; i++) {
+            sumClose5 += parseFloat(days[i][2]);
+            sumVol5 += parseFloat(days[i][5]);   
+        }
+        for (let i = days.length - count10; i < days.length; i++) {
+            sumClose10 += parseFloat(days[i][2]);
+        }
+        for (let i = days.length - count20; i < days.length; i++) {
+            sumClose20 += parseFloat(days[i][2]);
+        }
+
+        const realMA5 = parseFloat((sumClose5 / count5).toFixed(2));
+        const realMA10 = parseFloat((sumClose10 / count10).toFixed(2));
+        const realMA20 = parseFloat((sumClose20 / count20).toFixed(2));
+        const realAvg5Vol = parseFloat((sumVol5 / count5).toFixed(0)); 
+
+        const scriptRt = document.createElement('script');
+        scriptRt.charset = 'gbk'; 
+        scriptRt.src = `https://qt.gtimg.cn/q=${code},sh000001`;
+
+        scriptRt.onload = function() {
+            const stockRaw = window['v_' + code];
+            const marketRaw = window['v_sh000001'];
+
+            if (!stockRaw) { alert("实时数据失败！"); resetBtn(); return; }
+
+            const stockData = stockRaw.split('~');
+            const name = stockData[1];
+            const currentPrice = parseFloat(stockData[3]);
+            const lastClose = parseFloat(stockData[4]);
+            const openPrice = parseFloat(stockData[5]);
+            const currentVol = parseFloat(stockData[36]); 
+            const high = parseFloat(stockData[33]);
+            const low = parseFloat(stockData[34]);
+            const changeRate = parseFloat(stockData[32]); 
+
+            const marketData = marketRaw.split('~');
+            const marketChangeRate = parseFloat(marketData[32]);
+
+            // ==========================================
+            // 核心推演计算
+            // ==========================================
+            const isUshape = (openPrice > lastClose * 1.01) && (low < openPrice * 0.97) && (currentPrice > low * 1.03 && currentPrice > high * 0.98);
+            
+            // 长上影线判定 (上影线长度占整体价格的 3% 以上算异动)
+            const maxRealBody = Math.max(currentPrice, openPrice);
+            const upperShadowRatio = (high - maxRealBody) / currentPrice;
+            const isLongUpperShadow = upperShadowRatio > 0.03;
+
+            // 放量滞涨判定
+            const isHeavyVol = currentVol > realAvg5Vol * 1.5; // 量能放大超过1.5倍
+            const isStagnant = changeRate > 0 && changeRate < 2.5; // 涨幅却不到2.5%
+
+            // 乖离率 (判断是否在高位)
+            const biasMA20 = ((currentPrice - realMA20) / realMA20) * 100;
+
+            // UI 更新
+            displayArea.style.display = 'block';
+            document.getElementById('stockName').innerText = name;
+            document.getElementById('fullCode').innerText = code.toUpperCase();
+            document.getElementById('currentPrice').innerText = currentPrice.toFixed(2);
+            document.getElementById('changePercent').innerText = changeRate + "%";
+            document.getElementById('currentPrice').className = 'price-big ' + (changeRate >= 0 ? 'up' : 'down');
+            document.getElementById('changePercent').className = (changeRate >= 0 ? 'up' : 'down');
+
+            document.getElementById('debug-content').innerHTML = `
+                > MA5: <span class="param-highlight">${realMA5}</span> | MA10: <span class="param-highlight">${realMA10}</span> | ⚠️生命线 MA20: <span class="param-highlight">${realMA20}</span><br>
+                > 今日量: <span class="param-highlight">${currentVol}</span>手 | 5日均量: <span class="param-highlight">${realAvg5Vol}</span>手<br>
+                > 偏离生命线幅度: <span class="param-highlight">${biasMA20.toFixed(2)}%</span><br>
+                > 形态侦测: 长上影线[${isLongUpperShadow}] | U型洗盘[${isUshape}]
+            `;
+
+            let actionLevel = 0; // 0=观望, 1=持仓, 2=减仓, 3=清仓
+            let actionText = "";
+            let actionClass = "";
+
+            // 1. 【量价逻辑诊断】
+            let logicVolText = "";
+            if (currentVol > realAvg5Vol) {
+                if (isHeavyVol && isStagnant && isLongUpperShadow) {
+                    logicVolText = `<strong>⚠️ 高位滞涨 (主力派发嫌疑)</strong>放出巨量但涨幅极小，且留下长上影线。典型的主力边拉边出形态，切勿接盘。`;
+                    actionLevel = Math.max(actionLevel, 2); 
+                } else if (changeRate > 0) {
+                    logicVolText = `<strong>🔥 放量拉升</strong>成交量健康放大且收红。有利于后续突破。`;
+                    if (biasMA20 < 20) actionLevel = Math.max(actionLevel, 1); // 乖离不大则看多
+                } else {
+                    logicVolText = `<strong>🛑 放量下跌</strong>抛压沉重，资金出逃。`;
+                    actionLevel = Math.max(actionLevel, 2);
+                }
+            } else {
+                if (changeRate < 0) {
+                    if (currentPrice < realMA5 && currentPrice >= realMA10) {
+                        logicVolText = `<strong>📉 缩量回踩</strong>缩量跌破 5 日线，但 10 日线防线尚在。可能是短线洗盘。`;
+                    } else if (currentPrice < realMA10) {
+                        logicVolText = `<strong>🧊 缩量破位</strong>不仅跌破 5 日线，甚至击穿 10 日线。属阴跌形态，疑似无主力。`;
+                        actionLevel = Math.max(actionLevel, 3);
+                    } else {
+                        logicVolText = `<strong>☁️ 缩量调整</strong>正常回调，未破重要支撑。`;
+                    }
+                } else {
+                    logicVolText = `<strong>⚖️ 缩量反弹</strong>量能不足，随时可能冲高回落。`;
+                }
+            }
+            document.getElementById('logic-volume').innerHTML = logicVolText;
+
+            // 2. 【防线与形态诊断】
+            let logicPatternText = "";
+            if (currentPrice < realMA20) {
+                logicPatternText = `<strong>☠️ 趋势破位预警</strong>现价已跌破 20 日生命线(${realMA20})，中期趋势走坏，极度危险。`;
+                actionLevel = Math.max(actionLevel, 3);
+            } else if (isUshape) {
+                logicPatternText = `<strong>🚨 分时诱多预警</strong>开盘猛冲+盘中深砸+尾盘拉升，日内洗盘极其剧烈，高风险。`;
+                actionLevel = Math.max(actionLevel, 2);
+            } else if (biasMA20 > 30) {
+                logicPatternText = `<strong>🎈 高位风险提示</strong>股价偏离 20 日线已超 30%，随时面临巨大获利盘砸盘风险。`;
+                actionLevel = Math.max(actionLevel, 2);
+            } else {
+                logicPatternText = `<strong>🛡️ 均线防线稳固</strong>目前稳居生命线之上，整体形态安全。`;
+            }
+            document.getElementById('logic-pattern').innerHTML = logicPatternText;
+
+            // 3. 【强弱逻辑诊断】
+            let logicStrText = "";
+            if (changeRate > marketChangeRate) {
+                logicStrText = `<strong>📈 相对强弱：强</strong>今日涨幅(${changeRate}%) 跑赢大盘(${marketChangeRate}%)。`;
+            } else {
+                logicStrText = `<strong>📉 相对强弱：弱</strong>今日涨幅(${changeRate}%) 跑输大盘(${marketChangeRate}%)。`;
+                if (actionLevel === 1) actionLevel = 0; // 如果原本想看多，但弱于大盘，降级为观望
+            }
+            document.getElementById('logic-strength').innerHTML = logicStrText;
+
+            // ==========================================
+            // 生成终极操作指令
+            // ==========================================
+            if (actionLevel === 3) {
+                actionText = "🔴 坚决清仓 / 止损离场"; actionClass = "bg-sell";
+            } else if (actionLevel === 2) {
+                actionText = "🟡 逢高减仓 / 锁定利润"; actionClass = "bg-warn";
+            } else if (actionLevel === 1) {
+                actionText = "🟢 积极做多 / 继续持仓"; actionClass = "bg-buy";
+            } else {
+                actionText = "⚪ 耐心观望 / 多看少动"; actionClass = "bg-wait";
+            }
+
+            finalDecision.innerText = actionText;
+            finalDecision.className = "decision-banner " + actionClass;
+            finalDecision.style.display = "block";
+
+            document.head.removeChild(scriptRt);
+            document.head.removeChild(scriptKline);
+            resetBtn();
+        };
+
+        scriptRt.onerror = function() { alert("实时数据中断！"); resetBtn(); };
+        document.head.appendChild(scriptRt);
+    };
+
+    scriptKline.onerror = function() { alert("历史数据获取失败！"); resetBtn(); };
+    document.head.appendChild(scriptKline);
+
+    function resetBtn() {
+        analyzeBtn.disabled = false;
+        analyzeBtn.innerText = "执行分析";
+    }
+}
+</script>
+
+</body>
+</html>
